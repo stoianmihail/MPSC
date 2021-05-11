@@ -1,6 +1,7 @@
 import sys
 import mip
 import qubo
+import math
 
 def cmp(type=0):
     if type == 0:

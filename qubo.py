@@ -19,6 +19,7 @@ class Wrapper(object):
     def __init__(self, name, bound = None):
     # Constructor
         self.name = name
+        self.bound = bound
         # Do we have an upper-bound for the value?
         # Use the log-trick from https://arxiv.org/abs/1302.5843
         if bound:
@@ -43,6 +44,10 @@ class Wrapper(object):
     # This only works if the variable is a binary one
         assert len(self.bits) == 1
         return other - self.expr()
+
+    def __add__(self, other):
+    # Add 2 wrappers
+        return self.expr() + other.expr()
 
     def __str__(self):
     # Return the name
@@ -130,52 +135,61 @@ def solveQUBO(tmax, pmax, mmax, q, kmax, B, I, sfo, ssr, u, x, Cmin, Cmax, cc, d
 
             # (3.4): already taken into consideration through the bounded binary-encoding
     # (3.5)
-    if True:
-        # Init slack variables
-        l, r = {}, {}
-        for m in range(mmax):
-            for t in range(1, 1 + tmax):
-                l[(m, t)] =  Wrapper('l_%i_%i' % (m, t), bound=Cmax[(m, t)])
-                r[(m, t)] =  Wrapper('r_%i_%i' % (m, t), bound=Cmax[(m, t)])
-                numQubits += l[(m, t)].size()
-                numQubits += r[(m, t)].size()
+    # Init slack variables
+    l, r = {}, {}
+    for m in range(mmax):
+        for t in range(1, 1 + tmax):
+            l[(m, t)] =  Wrapper('l_%i_%i' % (m, t), bound=Cmax[(m, t)] - Cmin[(m, t)])
+            r[(m, t)] =  Wrapper('r_%i_%i' % (m, t), bound=Cmax[(m, t)] - Cmin[(m, t)])
+            numQubits += l[(m, t)].size()
+            numQubits += r[(m, t)].size()
 
-        # And build the constraint
-        for m in range(mmax):
-            for t in range(1, 1 + tmax):
-                variable_sum = 0
-                const_sum = 0
-                for p in range(pmax):
-                    for k in range(1 + min(kmax, tmax - t)):
-                        # Optimize the loop by splitting the variable part from the constant one
-                        const_sum += cc[(p, m, k)] * xi[(p, m, t + k)]
-                        variable_sum += cc[(p, m, k)] * x[(p, m, t + k)]
-                constraint5_left_side += modelEqConstraint(Cmin[(m, t)] + l[(m, t)] * 1, const_sum + variable_sum * 1)
-                constraint5_right_side += modelEqConstraint(const_sum + variable_sum * 1, Cmin[(m, t)] + r[(m, t)] * 1)
+    # And build the constraint
+    for m in range(mmax):
+        for t in range(1, 1 + tmax):
+            variable_sum = 0
+            const_sum = 0
+            for p in range(pmax):
+                for k in range(1 + min(kmax, tmax - t)):
+                    # Optimize the loop by splitting the variable part from the constant one
+                    const_sum += cc[(p, m, k)] * xi[(p, m, t + k)]
+                    variable_sum += cc[(p, m, k)] * x[(p, m, t + k)]
+            constraint5_left_side += modelEqConstraint(Cmin[(m, t)] + l[(m, t)] * 1, const_sum + variable_sum * 1)
+            constraint5_right_side += modelEqConstraint(const_sum + variable_sum * 1 + r[(m, t)] * 1, Cmax[(m, t)])
 
     # (3.6)
-    if False:
-        slack = {}
-        for p in range(pmax):
-            for m in range(mmax):
-                for t in range(1, 1 + tmax):
-                    slack[(p, m, t)] = Wrapper('slack_%i_%i' % (m, t), bound=maxValue)
-                    constraint6 += modelEqConstraint(x[(p, m, t)] + slack[(p, m, t)] * 1, maxValue * u[(p, m, t)])
+    slack = {}
+    for p in range(pmax):
+        for m in range(mmax):
+            for t in range(1, 1 + tmax):
+                slack[(p, m, t)] = Wrapper('slack_%i_%i_%i' % (p, m, t), bound=maxValue)
+                numQubits += slack[(p, m, t)].size()
+                constraint6 += modelEqConstraint(x[(p, m, t)] + slack[(p, m, t)], maxValue * u[(p, m, t)])
 
     # Build the objective function
-    objFunc = 0
-    for p in range(pmax):
-        for t in range(1, 1 + tmax):
-            objFunc += rev[(p, t)] * ssr[(p, t)]
-            objFunc -= hc[(p, t)] * I[(p, t)]
-            objFunc -= udc[(p, t)] * B[(p, t)]
-            sum1 = 0
-            sum2 = 0
-            for m in range(mmax):
-                sum1 += mc[(p, m, t)] * x[(p, m, t)]
-                sum2 += lc[(p, m, t)] * u[(p, m, t)]
-            objFunc -= sum1
-            objFunc -= sum2
+    def evalObj(best_solution=None):
+        def mul(l, r):
+            if best_solution:
+                return l * r.value(best_solution)
+            else:
+                return l * r
+        objFunc = 0
+        for p in range(pmax):
+            for t in range(1, 1 + tmax):
+                objFunc += mul(rev[(p, t)], ssr[(p, t)])
+                objFunc -= mul(hc[(p, t)], I[(p, t)])
+                objFunc -= mul(udc[(p, t)], B[(p, t)])
+                sum1 = 0
+                sum2 = 0
+                for m in range(mmax):
+                    sum1 += mul(mc[(p, m, t)], x[(p, m, t)])
+                    sum2 += mul(lc[(p, m, t)], u[(p, m, t)])
+                objFunc -= sum1
+                objFunc -= sum2
+        return objFunc
+
+    # Build the expression of the objective function
+    objFunc = evalObj()
 
     # Build the Hamiltonian
     H = 0
@@ -191,6 +205,33 @@ def solveQUBO(tmax, pmax, mmax, q, kmax, B, I, sfo, ssr, u, x, Cmin, Cmax, cc, d
     # And compile
     bqm = H.compile().to_bqm()
 
+    def checkSolution(best_solution):
+        # (3.1)
+        # (3.2)
+        # (3.4)
+        # (3.5)
+        print("Check (3.5)")
+        for m in range(mmax):
+            for t in range(1, 1 + tmax):
+                sum = 0
+                for p in range(pmax):
+                    inner_sum = 0
+                    for k in range(1 + min(kmax, tmax - t)):
+                        inner_sum += cc[(p, m, k)] * (x[(p, m, t + k)].value(best_solution) + xi[(p, m, t + k)])
+                    sum += inner_sum
+                if not ((Cmin[(m, t)] <= sum) and (sum <= Cmax[(m, t)])):
+                    print("fail: " + str(Cmin[(m, t)]) + " <= " + str(sum) + " <= " + str(Cmax[(m, t)]))
+                    assert 0
+        # (3.6)
+        print("Check (3.6)")
+        for p in range(pmax):
+            for m in range(mmax):
+                for t in range(1, 1 + tmax):
+                    if u[(p, m, t)].value(best_solution) == 0 and x[(p, m, t)].value(best_solution) > 0:
+                        print('u_%i_%i_%i' % (p, m, t) + " -> " + str(u[(p, m, t)].value(best_solution)))
+                        print('x_%i_%i_%i' % (p, m, t) + " -> " + str(x[(p, m, t)].value(best_solution)))
+                        assert 0
+
     def showSolution(best_solution):
         if False:
             return
@@ -202,7 +243,7 @@ def solveQUBO(tmax, pmax, mmax, q, kmax, B, I, sfo, ssr, u, x, Cmin, Cmax, cc, d
             for m in range(mmax):
                 for t in range(1, 1 + tmax):
                     print('x_%i_%i_%i' % (p, m, t) + " -> " + str(x[(p, m, t)].value(best_solution)))
-                    print("sum of bits of: " + 'x_%i_%i_%i' % (p, m, t) + " -> " + str(x[(p, m, t)].valueOfBits(best_solution)))
+                    #print("sum of bits of: " + 'x_%i_%i_%i' % (p, m, t) + " -> " + str(x[(p, m, t)].valueOfBits(best_solution)))
         if True:
             for m in range(mmax):
                 for t in range(1, 1 + tmax):
@@ -214,6 +255,7 @@ def solveQUBO(tmax, pmax, mmax, q, kmax, B, I, sfo, ssr, u, x, Cmin, Cmax, cc, d
                         sum += inner_sum
                     print(str(Cmin[(m, t)]) + " <= " + str(sum) + " <= " + str(Cmax[(m, t)]))
                     print(sum)
+    print("numQubits=" + str(numQubits))
     sampler = LeapHybridSampler()
     print("Sending problem...")
     sample_set = sampler.sample(bqm)
@@ -231,7 +273,8 @@ def solveQUBO(tmax, pmax, mmax, q, kmax, B, I, sfo, ssr, u, x, Cmin, Cmax, cc, d
     Q, offset = bqm.to_qubo()
     print("#qubits=" + str(numQubits))
     print("Solution Energy: ", dimod.qubo_energy(best_solution, Q, offset))
-    showSolution(best_solution)
+    print("Objective value: " + str(evalObj(best_solution)))
+    checkSolution(best_solution)
     pass
 
 def main():
