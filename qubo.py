@@ -1,6 +1,6 @@
 import numpy as np
 import dimod
-from math import log2, floor
+import math
 import os
 import sys
 import copy
@@ -19,8 +19,10 @@ class Wrapper(object):
     def __init__(self, name, bound = None):
     # Constructor
         self.name = name
+        # Do we have an upper-bound for the value?
+        # Use the log-trick from https://arxiv.org/abs/1302.5843
         if bound:
-            M = floor(log2(bound))
+            M = math.floor(math.log2(bound))
             self.coefs = [2**n for n in range(M)]
             self.coefs.append(bound + 1 - 2**M)
             self.bits = [Binary(name + "-bit=" + str(index)) for index in range(M + 1)]
@@ -38,104 +40,55 @@ class Wrapper(object):
         return other * self.expr()
 
     def __rsub__(self, other):
-        # This only works if the variable is a binary one
+    # This only works if the variable is a binary one
         assert len(self.bits) == 1
         return other - self.expr()
 
+    def __str__(self):
+    # Return the name
+        return self.name
+
     def expr(self):
     # Return the bounded binary-encoding
-        return sum([self.coefs[index] * self.bits[index] for index in range(len(self.coefs))])
+        return sum(self.coefs[index] * self.bits[index] for index in range(len(self.coefs)))
 
     def sumOfBits(self):
     # Return the sum of bits: needed to test whether the represented number if zero
         return sum(self.bits[index] for index in range(len(self.coefs)))
 
-    def __str__(self):
-        return self.name
+    def valueOfBits(self, best):
+        return sum(best[self.name + "-bit=" + str(index)] for index in range(len(self.coefs)))
 
-def solveQUBO():
-    tmax = 3
-    pmax = 3
-    mmax = 3
-    q = 3
-    kmax = q - 1
+    def value(self, best):
+    # Return the value of the solution
+        return sum(self.coefs[index] * best[self.name + "-bit=" + str(index)] for index in range(len(self.coefs)))
 
-    Cmin = {}
-    Cmax = {}
-    for m in range(mmax):
-        for t in range(1, 1 + tmax):
-            # 6720 hours
-            Cmax[(m, t)] = 6720
-            Cmin[(m, t)] = 0.1 * Cmax[(m, t)]
-    cc = {}
-    for p in range(pmax):
-        for m in range(mmax):
-            for k in range(1 + kmax):
-                # 2 hours / wafer
-                cc[(p, m, k)] = 2
-    rev = {}
-    for p in range(pmax):
-        for t in range(1, 1 + tmax):
-            rev[(p, t)] = 80
-    dsr = {}
-    for p in range(pmax):
-        for t in range(1, 1 + tmax):
-            dsr[(p, t)] = 200 * mmax
-    hc = {}
-    for p in range(pmax):
-        for t in range(1, 1 + tmax):
-            hc[(p, t)] = 5
-    udc = {}
-    for p in range(pmax):
-        for t in range(1, 1 + tmax):
-            udc[(p, t)] = 200
-    lc = {}
-    mc = {}
-    for p in range(pmax):
-        for m in range(mmax):
-            for t in range(1, 1 + tmax):
-                mc[(p, m, t)] = 10
-                lc[(p, m, t)] = 375
-    xi = {}
-    for p in range(pmax):
-        for m in range(mmax):
-            for t in range(1, 1 + tmax):
-                # Consider only in-house locations
-                xi[(p, m, t)] = 400 / pmax
-    dfo = {}
-    for p in range(pmax):
-        for t in range(1, 1 + tmax):
-            dfo[(p, t)] = 200 * mmax
-    maxValue = 2**16 - 1
+def solveQUBO(tmax, pmax, mmax, q, kmax, B, I, sfo, ssr, u, x, Cmin, Cmax, cc, dfo, dsr, hc, lc, mc, udc, rev, xi, delta):
+    maxValue = delta
     numQubits = 0
-    B = {}
     for p in range(pmax):
-        B[(p, 0)] = 250 * mmax / pmax
+        # B[(p, 0)] has already been initialized
         for t in range(1, 1 + tmax):
             B[(p, t)] = Wrapper('B_%i_%i' % (p, t), bound=maxValue)
             numQubits += B[(p, t)].size()
-    I = {}
     for p in range(pmax):
-        I[(p, 0)] = 500 * mmax / pmax
+        # I[(p, 0)] has already been initialized
         for t in range(1, 1 + tmax):
             I[(p, t)] = Wrapper('I_%i_%i' % (p, t), bound=maxValue)
             numQubits += I[(p, t)].size()
-    ssr = {}
     for p in range(pmax):
         for t in range(1, 1 + tmax):
             ssr[(p, t)] = Wrapper('ssr_%i_%i' % (p, t), bound=dsr[(p, t)])
-    sfo = {}
+            numQubits += ssr[(p, t)].size()
     for p in range(pmax):
         for t in range(1, 1 + tmax):
             sfo[(p, t)] = Wrapper('sfo_%i_%i' % (p, t), bound=maxValue)
             numQubits += sfo[(p, t)].size()
-    u = {}
     for p in range(pmax):
         for m in range(mmax):
             for t in range(1, 1 + tmax):
                 u[(p, m, t)] = Wrapper('u_%i_%i_%i' % (p, m, t), bound=1)
                 numQubits += u[(p, m, t)].size()
-    x = {}
     for p in range(pmax):
         for m in range(mmax):
             for t in range(1, 1 + tmax):
@@ -160,25 +113,17 @@ def solveQUBO():
     def modelEqConstraint(a, b):
         return (a - b)**2
 
-    # Model (3.6) - the delta constraint
-    def modelDeltaConstraint(x, u):
-        return x.sumOfBits() * (1 - u)
-
     # And model the constraints
     for p in range(pmax):
         for t in range(1, 1 + tmax):
+            # Compute the sums used in (3.2) (see below)
             sum1 = 0
             sum2 = 0
             for m in range(mmax):
                 sum1 += x[(p, m ,t)] * 1
                 sum2 += xi[(p, m, t)]
-
-                # (3.6). Note: we do not use ´delta´ at all
-                # For reference: \\mucsdn32.eu.infineon.com\csc_bs\02_public\_Stoian\tutorial\Thomas PhD
-                constraint6 += modelDeltaConstraint(x[(p, m, t)], u[(p, m, t)])
-
             # (3.2)
-            constraint2 += modelEqConstraint(buildSideOfConstraint(I[(p, t)], sfo[(p, t)], ssr[(p, t)]), buildSideOfConstraint(I[(p, t - 1)], sum1, sum2))
+            constraint2 += modelEqConstraint(buildSideOfConstraint(I[(p, t)], ssr[(p, t)], sfo[(p, t)]), buildSideOfConstraint(I[(p, t - 1)], sum1, sum2))
 
             # (3.3)
             constraint3 += modelEqConstraint(buildSideOfConstraint(sfo[(p, t)], B[(p, t)]), buildSideOfConstraint(dfo[(p, t)], B[(p, t - 1)]))
@@ -208,6 +153,15 @@ def solveQUBO():
                 constraint5_left_side += modelEqConstraint(Cmin[(m, t)] + l[(m, t)] * 1, const_sum + variable_sum * 1)
                 constraint5_right_side += modelEqConstraint(const_sum + variable_sum * 1, Cmin[(m, t)] + r[(m, t)] * 1)
 
+    # (3.6)
+    if False:
+        slack = {}
+        for p in range(pmax):
+            for m in range(mmax):
+                for t in range(1, 1 + tmax):
+                    slack[(p, m, t)] = Wrapper('slack_%i_%i' % (m, t), bound=maxValue)
+                    constraint6 += modelEqConstraint(x[(p, m, t)] + slack[(p, m, t)] * 1, maxValue * u[(p, m, t)])
+
     # Build the objective function
     objFunc = 0
     for p in range(pmax):
@@ -228,6 +182,8 @@ def solveQUBO():
 
     # We want to maximize, so revert the sign
     H -= objFunc
+
+    # Add the constraints multiplied by their strengths
     strengths = {constraint2 : 1, constraint3 : 1, constraint5_left_side : 1, constraint5_right_side : 1, constraint6 : 1}
     for c in strengths.keys():
         H += strengths[c] * c
@@ -235,25 +191,26 @@ def solveQUBO():
     # And compile
     bqm = H.compile().to_bqm()
 
-    def showSolution():
-        if True:
+    def showSolution(best_solution):
+        if False:
             return
         for p in range(pmax):
             for m in range(mmax):
                 for t in range(1, 1 + tmax):
-                    print('u_%i_%i_%i' % (p, m, t) + " -> " + str(u[(p, m, t)].solution_value()))
+                    print('u_%i_%i_%i' % (p, m, t) + " -> " + str(u[(p, m, t)].value(best_solution)))
         for p in range(pmax):
             for m in range(mmax):
                 for t in range(1, 1 + tmax):
-                    print('x_%i_%i_%i' % (p, m, t) + " -> " + str(x[(p, m, t)].solution_value()))
-        if False:
+                    print('x_%i_%i_%i' % (p, m, t) + " -> " + str(x[(p, m, t)].value(best_solution)))
+                    print("sum of bits of: " + 'x_%i_%i_%i' % (p, m, t) + " -> " + str(x[(p, m, t)].valueOfBits(best_solution)))
+        if True:
             for m in range(mmax):
                 for t in range(1, 1 + tmax):
                     sum = 0
                     for p in range(pmax):
                         inner_sum = 0
                         for k in range(1 + min(kmax, tmax - t)):
-                            inner_sum += cc[(p, m, k)] * (x[(p, m, t + k)].solution_value() + xi[(p, m, t + k)])
+                            inner_sum += cc[(p, m, k)] * (x[(p, m, t + k)].value(best_solution) + xi[(p, m, t + k)])
                         sum += inner_sum
                     print(str(Cmin[(m, t)]) + " <= " + str(sum) + " <= " + str(Cmax[(m, t)]))
                     print(sum)
@@ -267,10 +224,14 @@ def solveQUBO():
     if False:
         for item in best_solution.items():
             print(item)
+            label, value = item
+            print(label)
+            print(value)
 
     Q, offset = bqm.to_qubo()
     print("#qubits=" + str(numQubits))
     print("Solution Energy: ", dimod.qubo_energy(best_solution, Q, offset))
+    showSolution(best_solution)
     pass
 
 def main():
