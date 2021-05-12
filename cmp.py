@@ -14,7 +14,7 @@ def cmp(type=0):
     tmax = 2
     pmax = 2
     mmax = 2
-    q = 2
+    q = 3
     kmax = q - 1
 
     # Set the constants

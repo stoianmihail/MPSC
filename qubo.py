@@ -158,13 +158,13 @@ def solveQUBO(tmax, pmax, mmax, q, kmax, B, I, sfo, ssr, u, x, Cmin, Cmax, cc, d
             constraint5_right_side += modelEqConstraint(const_sum + variable_sum * 1 + r[(m, t)] * 1, Cmax[(m, t)])
 
     # (3.6)
-    slack = {}
+    tau = {}
     for p in range(pmax):
         for m in range(mmax):
             for t in range(1, 1 + tmax):
-                slack[(p, m, t)] = Wrapper('slack_%i_%i_%i' % (p, m, t), bound=maxValue)
-                numQubits += slack[(p, m, t)].size()
-                constraint6 += modelEqConstraint(x[(p, m, t)] + slack[(p, m, t)], maxValue * u[(p, m, t)])
+                tau[(p, m, t)] = Wrapper('tau_%i_%i_%i' % (p, m, t), bound=maxValue)
+                numQubits += tau[(p, m, t)].size()
+                constraint6 += modelEqConstraint(x[(p, m, t)] + tau[(p, m, t)], maxValue * u[(p, m, t)])
 
     # Build the objective function
     def evalObj(best_solution=None):
@@ -206,9 +206,36 @@ def solveQUBO(tmax, pmax, mmax, q, kmax, B, I, sfo, ssr, u, x, Cmin, Cmax, cc, d
     bqm = H.compile().to_bqm()
 
     def checkSolution(best_solution):
-        # (3.1)
         # (3.2)
+        print("Check (3.2)")
+        for p in range(pmax):
+            for t in range(1, 1 + tmax):
+                # Compute the sums used in (3.2) (see below)
+                sum1 = 0
+                sum2 = 0
+                for m in range(mmax):
+                    sum1 += x[(p, m ,t)].value(best_solution) * 1
+                    sum2 += xi[(p, m, t)]
+                l = I[(p, t)].value(best_solution) + ssr[(p, t)].value(best_solution) + sfo[(p, t)].value(best_solution)
+                r = (I[(p, t - 1)].value(best_solution) if t > 1 else I[(p, t - 1)]) + sum1 + sum2
+                if l != r:
+                    print("fail: " + str(l) + " == " + str(r))
+        # (3.3)
+        print("Check (3.3)")
+        for p in range(pmax):
+            for t in range(1, 1 + tmax):
+                l = sfo[(p, t)].value(best_solution) + B[(p, t)].value(best_solution)
+                r = dfo[(p, t)] + (B[(p, t - 1)].value(best_solution) if t > 1 else B[(p, t - 1)])
+                if l != r:
+                    print("fail: " + str(l) + " == " + str(r))
         # (3.4)
+        print("Check (3.4)")
+        for p in range(pmax):
+            for t in range(1, 1 + tmax):
+                l = ssr[(p, t)].value(best_solution)
+                r = dsr[(p, t)]
+                if l > r:
+                    print("fail: " + str(l) + " <= " + str(r))
         # (3.5)
         print("Check (3.5)")
         for m in range(mmax):
@@ -221,16 +248,14 @@ def solveQUBO(tmax, pmax, mmax, q, kmax, B, I, sfo, ssr, u, x, Cmin, Cmax, cc, d
                     sum += inner_sum
                 if not ((Cmin[(m, t)] <= sum) and (sum <= Cmax[(m, t)])):
                     print("fail: " + str(Cmin[(m, t)]) + " <= " + str(sum) + " <= " + str(Cmax[(m, t)]))
-                    assert 0
         # (3.6)
         print("Check (3.6)")
         for p in range(pmax):
             for m in range(mmax):
                 for t in range(1, 1 + tmax):
                     if u[(p, m, t)].value(best_solution) == 0 and x[(p, m, t)].value(best_solution) > 0:
-                        print('u_%i_%i_%i' % (p, m, t) + " -> " + str(u[(p, m, t)].value(best_solution)))
-                        print('x_%i_%i_%i' % (p, m, t) + " -> " + str(x[(p, m, t)].value(best_solution)))
-                        assert 0
+                        print("fail: " + 'u_%i_%i_%i' % (p, m, t) + " -> " + str(u[(p, m, t)].value(best_solution)))
+                        print("fail: " + 'x_%i_%i_%i' % (p, m, t) + " -> " + str(x[(p, m, t)].value(best_solution)))
 
     def showSolution(best_solution):
         if False:
@@ -262,6 +287,7 @@ def solveQUBO(tmax, pmax, mmax, q, kmax, B, I, sfo, ssr, u, x, Cmin, Cmax, cc, d
     print("Results from D-Wave:")
     if False:
         print(sample_set)
+    print(sample_set)
     best_solution = sample_set.lowest().first.sample
     if False:
         for item in best_solution.items():
